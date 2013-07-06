@@ -1,4 +1,5 @@
 /* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (C) 2011-2012 Sony Ericsson Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +19,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/mfd/pm8xxx/core.h>
 #include <linux/regulator/pmic8901-regulator.h>
+#include <linux/module.h>
 
 /* Regulator types */
 #define REGULATOR_TYPE_LDO		0
@@ -954,7 +956,7 @@ static int __devinit pm8901_vreg_probe(struct platform_device *pdev)
 			      &= ~(REGULATOR_MODE_NORMAL | REGULATOR_MODE_IDLE);
 
 		vreg->rdev = regulator_register(rdesc, &pdev->dev,
-				&vreg->pdata->init_data, vreg);
+				&vreg->pdata->init_data, vreg, NULL);
 		if (IS_ERR(vreg->rdev)) {
 			rc = PTR_ERR(vreg->rdev);
 			pr_err("%s: regulator_register failed for %s, rc=%d\n",

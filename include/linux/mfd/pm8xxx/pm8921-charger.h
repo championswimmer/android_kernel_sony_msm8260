@@ -48,6 +48,14 @@ enum pm8921_usb_debounce_time {
 	PM_USB_DEBOUNCE_80P5MS,
 };
 
+enum pm8921_chg_led_src_config {
+	LED_SRC_GND,
+	LED_SRC_VPH_PWR,
+	LED_SRC_5V,
+	LED_SRC_MIN_VPH_5V,
+	LED_SRC_BYPASS,
+};
+
 /**
  * struct pm8921_charger_platform_data -
  * @safety_time:	max charging time in minutes incl. fast and trkl
@@ -59,8 +67,11 @@ enum pm8921_usb_debounce_time {
  * @min_voltage:	the voltage (mV) where charging method switches from
  *			trickle to fast. This is also the minimum voltage the
  *			system operates at
+ * @uvd_thresh_voltage:	the USB falling UVD threshold (mV) (PM8917 only)
  * @resume_voltage_delta:	the (mV) drop to wait for before resume charging
  *				after the battery has been fully charged
+ * @resume_soc:		the state of charge (%) to wait for resume charging
+ *			after the battery has been fully charged
  * @term_current:	the charger current (mA) at which EOC happens
  * @cool_temp:		the temperature (degC) at which the battery is
  *			considered cool charging current and voltage is reduced.
@@ -71,6 +82,7 @@ enum pm8921_usb_debounce_time {
  * @temp_check_period:	The polling interval in seconds to check battery
  *			temeperature if it has gone to cool or warm temperature
  *			area
+ * @safe_current:		writeable value of max charge current in mA
  * @max_bat_chg_current:	Max charge current of the battery in mA
  *				Usually 70% of full charge capacity
  * @cool_bat_chg_current:	chg current (mA) when the battery is cool
@@ -100,6 +112,11 @@ enum pm8921_usb_debounce_time {
  *			VBAT_THERM goes below 35% of VREF_THERM, if low the
  *			battery will be considered hot when VBAT_THERM goes
  *			below 25% of VREF_THERM. Hardware defaults to low.
+ * @rconn_mohm:		resistance in milliOhm from the vbat sense to ground
+ *			with the battery terminals shorted. This indicates
+ *			resistance of the pads, connectors, battery terminals
+ *			and rsense.
+ * @led_src_config:	Power source for anode of charger indicator LED.
  */
 struct pm8921_charger_platform_data {
 	struct pm8xxx_charger_core_data	charger_cdata;
@@ -108,11 +125,17 @@ struct pm8921_charger_platform_data {
 	unsigned int			update_time;
 	unsigned int			max_voltage;
 	unsigned int			min_voltage;
+	unsigned int			uvd_thresh_voltage;
 	unsigned int			resume_voltage_delta;
+	unsigned int			resume_soc;
 	unsigned int			term_current;
+	int				cold_temp;
 	int				cool_temp;
 	int				warm_temp;
+	int				hot_temp;
+	int				hysterisis_temp;
 	unsigned int			temp_check_period;
+	unsigned int			safe_current;
 	unsigned int			max_bat_chg_current;
 	unsigned int			cool_bat_chg_current;
 	unsigned int			warm_bat_chg_current;
@@ -131,6 +154,8 @@ struct pm8921_charger_platform_data {
 	int				thermal_levels;
 	enum pm8921_chg_cold_thr	cold_thr;
 	enum pm8921_chg_hot_thr		hot_thr;
+	int				rconn_mohm;
+	enum pm8921_chg_led_src_config	led_src_config;
 };
 
 enum pm8921_charger_source {
@@ -143,16 +168,6 @@ enum pm8921_charger_source {
 void pm8921_charger_vbus_draw(unsigned int mA);
 int pm8921_charger_register_vbus_sn(void (*callback)(int));
 void pm8921_charger_unregister_vbus_sn(void (*callback)(int));
-/**
- * pm8921_charger_enable -
- *
- * @enable: 1 means enable charging, 0 means disable
- *
- * Enable/Disable battery charging current, the device will still draw current
- * from the charging source
- */
-int pm8921_charger_enable(bool enable);
-
 /**
  * pm8921_is_usb_chg_plugged_in - is usb plugged in
  *
@@ -270,10 +285,6 @@ static inline int pm8921_charger_register_vbus_sn(void (*callback)(int))
 static inline void pm8921_charger_unregister_vbus_sn(void (*callback)(int))
 {
 }
-static inline int pm8921_charger_enable(bool enable)
-{
-	return -ENXIO;
-}
 static inline int pm8921_is_usb_chg_plugged_in(void)
 {
 	return -ENXIO;
@@ -283,6 +294,10 @@ static inline int pm8921_is_dc_chg_plugged_in(void)
 	return -ENXIO;
 }
 static inline int pm8921_is_battery_present(void)
+{
+	return -ENXIO;
+}
+static inline int pm8917_set_under_voltage_detection_threshold(int mv)
 {
 	return -ENXIO;
 }

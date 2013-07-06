@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -207,7 +207,7 @@ static void modem_crash_shutdown(
 {
 	/* If modem hasn't already crashed, send SMSM_RESET. */
 	if (!(smsm_get_state(SMSM_MODEM_STATE) & SMSM_RESET)) {
-		modem_unregister_notifier(&modem_notif_nb);
+		ignore_smsm_ack = 1;
 		smsm_reset_modem(SMSM_RESET);
 	}
 
@@ -275,8 +275,6 @@ static void debug_crash_modem_fn(struct work_struct *work)
 {
 	if (reset_modem == 1)
 		smsm_reset_modem(SMSM_RESET);
-	else if (reset_modem == 2)
-		subsystem_restart("lpass");
 
 	reset_modem = 0;
 	schedule_delayed_work(&debug_crash_modem_work, msecs_to_jiffies(1000));

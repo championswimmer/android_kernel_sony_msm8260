@@ -1,7 +1,8 @@
 /*
  * TSIF Driver
  *
- * Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2009-2012, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2012, Sony Ericsson Mobile Communications AB
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,8 +32,8 @@
 #include <linux/tsif_api.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>          /* kfree, kzalloc */
+#include <linux/gpio.h>
 
-#include <mach/gpio.h>
 #include <mach/dma.h>
 #include <mach/msm_tsif.h>
 
@@ -304,7 +305,9 @@ static int tsif_gpios_disable(const struct msm_gpio *table, int size)
 	for (i = size-1; i >= 0; i--) {
 		int tmp;
 		g = table + i;
-		tmp = gpio_tlmm_config(g->gpio_cfg, GPIO_CFG_DISABLE);
+		tmp = gpio_tlmm_config(GPIO_CFG(GPIO_PIN(g->gpio_cfg),
+			0, GPIO_CFG_INPUT, GPIO_CFG_PULL_DOWN, GPIO_CFG_2MA),
+			GPIO_CFG_DISABLE);
 		if (tmp) {
 			pr_err("gpio_tlmm_config(0x%08x, GPIO_CFG_DISABLE)"
 			       " <%s> failed: %d\n",
@@ -680,8 +683,8 @@ static void tsif_dma_flush(struct msm_tsif_device *tsif_device)
 		tsif_device->state = tsif_state_flushing;
 		while (tsif_device->xfer[0].busy ||
 		       tsif_device->xfer[1].busy) {
-			msm_dmov_flush(tsif_device->dma);
-			msleep(10);
+			msm_dmov_flush(tsif_device->dma, 1);
+			usleep(10000);
 		}
 	}
 	tsif_device->state = tsif_state_stopped;
@@ -691,10 +694,15 @@ static void tsif_dma_flush(struct msm_tsif_device *tsif_device)
 
 static void tsif_dma_exit(struct msm_tsif_device *tsif_device)
 {
-	int i;
 	tsif_device->state = tsif_state_flushing;
 	tasklet_kill(&tsif_device->dma_refill);
 	tsif_dma_flush(tsif_device);
+}
+
+static void tsif_dma_free(struct msm_tsif_device *tsif_device)
+{
+	int i;
+
 	for (i = 0; i < 2; i++) {
 		if (tsif_device->dmov_cmd[i]) {
 			dma_free_coherent(NULL, sizeof(struct tsif_dmov_cmd),
@@ -716,15 +724,7 @@ static void tsif_dma_exit(struct msm_tsif_device *tsif_device)
 static int tsif_dma_init(struct msm_tsif_device *tsif_device)
 {
 	int i;
-	/* TODO: allocate all DMA memory in one buffer */
-	/* Note: don't pass device,
-	   it require coherent_dma_mask id device definition */
-	tsif_device->data_buffer = dma_alloc_coherent(NULL, TSIF_BUF_SIZE,
-				&tsif_device->data_buffer_dma, GFP_KERNEL);
-	if (!tsif_device->data_buffer)
-		goto err;
-	dev_info(&tsif_device->pdev->dev, "data_buffer: %p phys 0x%08x\n",
-		 tsif_device->data_buffer, tsif_device->data_buffer_dma);
+
 	tsif_device->blob_wrapper_databuf.data = tsif_device->data_buffer;
 	tsif_device->blob_wrapper_databuf.size = TSIF_BUF_SIZE;
 	tsif_device->ri = 0;
@@ -733,14 +733,6 @@ static int tsif_dma_init(struct msm_tsif_device *tsif_device)
 	for (i = 0; i < 2; i++) {
 		dmov_box *box;
 		struct msm_dmov_cmd *hdr;
-		tsif_device->dmov_cmd[i] = dma_alloc_coherent(NULL,
-			sizeof(struct tsif_dmov_cmd),
-			&tsif_device->dmov_cmd_dma[i], GFP_KERNEL);
-		if (!tsif_device->dmov_cmd[i])
-			goto err;
-		dev_info(&tsif_device->pdev->dev, "dma[%i]: %p phys 0x%08x\n",
-			 i, tsif_device->dmov_cmd[i],
-			 tsif_device->dmov_cmd_dma[i]);
 		/* dst in 16 LSB, src in 16 MSB */
 		box = &(tsif_device->dmov_cmd[i]->box);
 		box->cmd = CMD_MODE_BOX | CMD_LC |
@@ -760,11 +752,36 @@ static int tsif_dma_init(struct msm_tsif_device *tsif_device)
 			      offsetof(struct tsif_dmov_cmd, box_ptr));
 		hdr->complete_func = tsif_dmov_complete_func;
 	}
-	msm_dmov_flush(tsif_device->dma);
+	msm_dmov_flush(tsif_device->dma, 1);
+	return 0;
+}
+
+static int tsif_dma_alloc(struct msm_tsif_device *tsif_device)
+{
+	int i;
+	/* Note: don't pass device,
+	   it require coherent_dma_mask id device definition */
+	tsif_device->data_buffer = dma_alloc_coherent(NULL, TSIF_BUF_SIZE,
+				&tsif_device->data_buffer_dma, GFP_KERNEL);
+	if (!tsif_device->data_buffer)
+		goto err;
+	dev_dbg(&tsif_device->pdev->dev, "data_buffer: %p phys 0x%08x\n",
+		 tsif_device->data_buffer, tsif_device->data_buffer_dma);
+	for (i = 0; i < ARRAY_SIZE(tsif_device->dmov_cmd_dma); i++) {
+		tsif_device->dmov_cmd[i] = dma_alloc_coherent(NULL,
+			sizeof(struct tsif_dmov_cmd),
+			&tsif_device->dmov_cmd_dma[i], GFP_KERNEL);
+		if (!tsif_device->dmov_cmd[i])
+			goto err;
+		dev_dbg(&tsif_device->pdev->dev, "dma[%i]: %p phys 0x%08x\n",
+			 i, tsif_device->dmov_cmd[i],
+			 tsif_device->dmov_cmd_dma[i]);
+	}
 	return 0;
 err:
 	dev_err(&tsif_device->pdev->dev, "Failed to allocate DMA buffers\n");
 	tsif_dma_exit(tsif_device);
+	tsif_dma_free(tsif_device);
 	return -ENOMEM;
 }
 
@@ -1025,12 +1042,30 @@ static int action_open(struct msm_tsif_device *tsif_device)
 	dev_info(&tsif_device->pdev->dev, "%s\n", __func__);
 	if (tsif_device->state != tsif_state_stopped)
 		return -EAGAIN;
+	if (!tsif_device->data_buffer) {
+		dev_dbg(&tsif_device->pdev->dev, "tsif_dma_alloc retry\n");
+		rc = tsif_dma_alloc(tsif_device);
+		if (rc) {
+			dev_err(&tsif_device->pdev->dev,
+				"failed to alloc DMA\n");
+			return rc;
+		}
+	}
 	rc = tsif_dma_init(tsif_device);
 	if (rc) {
 		dev_err(&tsif_device->pdev->dev, "failed to init DMA\n");
 		return rc;
 	}
 	tsif_device->state = tsif_state_running;
+
+	/* make sure the GPIO's are set up */
+	rc = tsif_start_gpios(tsif_device);
+	if (rc) {
+		dev_err(&tsif_device->pdev->dev, "failed to start GPIOs\n");
+		tsif_dma_exit(tsif_device);
+		return rc;
+	}
+
 	/*
 	 * DMA should be scheduled prior to TSIF hardware initialization,
 	 * otherwise "bus error" will be reported by Data Mover
@@ -1046,6 +1081,7 @@ static int action_open(struct msm_tsif_device *tsif_device)
 	rc = tsif_start_hw(tsif_device);
 	if (rc) {
 		dev_err(&tsif_device->pdev->dev, "Unable to start HW\n");
+		tsif_stop_gpios(tsif_device);
 		tsif_dma_exit(tsif_device);
 		tsif_clock(tsif_device, 0);
 		return rc;
@@ -1067,10 +1103,19 @@ static int action_close(struct msm_tsif_device *tsif_device)
 {
 	dev_info(&tsif_device->pdev->dev, "%s, state %d\n", __func__,
 		 (int)tsif_device->state);
-	/*
-	 * DMA should be flushed/stopped prior to TSIF hardware stop,
-	 * otherwise "bus error" will be reported by Data Mover
+
+	/* turn off the GPIO's to prevent new data from entering */
+	tsif_stop_gpios(tsif_device);
+
+	/* we unfortunately must sleep here to give the ADM time to
+	 * complete any outstanding reads after the GPIO's are turned
+	 * off.  There is no indication from the ADM hardware that
+	 * there are any outstanding reads on the bus, and if we
+	 * stop the TSIF too quickly, it can cause a bus error.
 	 */
+	msleep(100);
+
+	/* now we can stop the core */
 	tsif_stop_hw(tsif_device);
 	tsif_dma_exit(tsif_device);
 	tsif_clock(tsif_device, 0);
@@ -1317,9 +1362,6 @@ static int __devinit msm_tsif_probe(struct platform_device *pdev)
 	}
 	dev_info(&pdev->dev, "remapped phys 0x%08x => virt %p\n",
 		 tsif_device->memres->start, tsif_device->base);
-	rc = tsif_start_gpios(tsif_device);
-	if (rc)
-		goto err_gpio;
 
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
@@ -1348,6 +1390,9 @@ static int __devinit msm_tsif_probe(struct platform_device *pdev)
 		 tsif_device->irq, tsif_device->memres->start,
 		 tsif_device->dma, tsif_device->crci);
 	list_add(&tsif_device->devlist, &tsif_devices);
+	rc = tsif_dma_alloc(tsif_device);
+	if (rc)
+		dev_warn(&tsif_device->pdev->dev, "failed to alloc DMA\n");
 	return 0;
 /* error path */
 	sysfs_remove_group(&pdev->dev.kobj, &dev_attr_grp);
@@ -1355,8 +1400,6 @@ err_attrs:
 	free_irq(tsif_device->irq, tsif_device);
 err_irq:
 	tsif_debugfs_exit(tsif_device);
-	tsif_stop_gpios(tsif_device);
-err_gpio:
 	iounmap(tsif_device->base);
 err_ioremap:
 err_rgn:
@@ -1377,6 +1420,7 @@ static int __devexit msm_tsif_remove(struct platform_device *pdev)
 	free_irq(tsif_device->irq, tsif_device);
 	tsif_debugfs_exit(tsif_device);
 	tsif_dma_exit(tsif_device);
+	tsif_dma_free(tsif_device);
 	tsif_stop_gpios(tsif_device);
 	iounmap(tsif_device->base);
 	tsif_put_clocks(tsif_device);

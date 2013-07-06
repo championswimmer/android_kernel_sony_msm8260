@@ -236,18 +236,9 @@ static struct msm_bus_scale_pdata mdp_bus_scale_pdata = {
 	.name = "mdp",
 };
 
-static int mdp_core_clk_rate_table[] = {
-	59080000,
-	128000000,
-	160000000,
-	200000000,
-};
-
 static struct msm_panel_common_pdata mdp_pdata = {
 	.gpio = MDP_VSYNC_GPIO,
-	.mdp_core_clk_rate = 59080000,
-	.mdp_core_clk_table = mdp_core_clk_rate_table,
-	.num_mdp_clk = ARRAY_SIZE(mdp_core_clk_rate_table),
+	.mdp_max_clk = 200000000,
 	.mdp_bus_scale_table = &mdp_bus_scale_pdata,
 	.mdp_rev = MDP_REV_44,
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
@@ -255,6 +246,7 @@ static struct msm_panel_common_pdata mdp_pdata = {
 #else
 	.mem_hid = MEMTYPE_EBI1,
 #endif
+	.mdp_iommu_split_domain = 1,
 };
 
 void __init apq8064_mdp_writeback(struct memtype_reserve* reserve_table)
@@ -313,7 +305,16 @@ static struct platform_device hdmi_msm_device = {
 	.dev.platform_data = &hdmi_msm_data,
 };
 
+static char wfd_check_mdp_iommu_split_domain(void)
+{
+	return mdp_pdata.mdp_iommu_split_domain;
+}
+
 #ifdef CONFIG_FB_MSM_WRITEBACK_MSM_PANEL
+static struct msm_wfd_platform_data wfd_pdata = {
+	.wfd_check_mdp_iommu_split = wfd_check_mdp_iommu_split_domain,
+};
+
 static struct platform_device wfd_panel_device = {
 	.name = "wfd_panel",
 	.id = 0,
@@ -323,6 +324,7 @@ static struct platform_device wfd_panel_device = {
 static struct platform_device wfd_device = {
 	.name          = "msm_wfd",
 	.id            = -1,
+	.dev.platform_data = &wfd_pdata,
 };
 #endif
 
@@ -473,11 +475,18 @@ static int mipi_dsi_panel_power(int on)
 			}
 		}
 
+		rc = regulator_disable(reg_l11);
+		if (rc) {
+			pr_err("disable reg_l1 failed, rc=%d\n", rc);
+			return -ENODEV;
+		}
+
 		rc = regulator_disable(reg_lvs7);
 		if (rc) {
 			pr_err("disable reg_lvs7 failed, rc=%d\n", rc);
 			return -ENODEV;
 		}
+
 		rc = regulator_disable(reg_l2);
 		if (rc) {
 			pr_err("disable reg_l2 failed, rc=%d\n", rc);
@@ -1005,8 +1014,6 @@ void __init apq8064_init_fb(void)
  */
 static void set_mdp_clocks_for_wuxga(void)
 {
-	int i;
-
 	mdp_ui_vectors[0].ab = 2000000000;
 	mdp_ui_vectors[0].ib = 2000000000;
 	mdp_vga_vectors[0].ab = 2000000000;
@@ -1016,18 +1023,14 @@ static void set_mdp_clocks_for_wuxga(void)
 	mdp_1080p_vectors[0].ab = 2000000000;
 	mdp_1080p_vectors[0].ib = 2000000000;
 
-	mdp_pdata.mdp_core_clk_rate = 200000000;
-
-	for (i = 0; i < ARRAY_SIZE(mdp_core_clk_rate_table); i++)
-		mdp_core_clk_rate_table[i] = 200000000;
-
 	if (apq8064_hdmi_as_primary_selected()) {
 		dtv_bus_def_vectors[0].ab = 2000000000;
 		dtv_bus_def_vectors[0].ib = 2000000000;
 	}
 }
 
-void __init apq8064_set_display_params(char *prim_panel, char *ext_panel)
+void __init apq8064_set_display_params(char *prim_panel, char *ext_panel,
+		unsigned char resolution)
 {
 	/*
 	 * For certain MPQ boards, HDMI should be set as primary display
@@ -1062,4 +1065,6 @@ void __init apq8064_set_display_params(char *prim_panel, char *ext_panel)
 		pr_debug("msm_fb_pdata.ext_panel_name %s\n",
 			msm_fb_pdata.ext_panel_name);
 	}
+
+	msm_fb_pdata.ext_resolution = resolution;
 }

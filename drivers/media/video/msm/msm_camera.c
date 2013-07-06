@@ -35,6 +35,7 @@
 #include <linux/syscalls.h>
 #include <linux/hrtimer.h>
 #include <linux/ion.h>
+#include <mach/cpuidle.h>
 DEFINE_MUTEX(ctrl_cmd_lock);
 
 #define CAMERA_STOP_VIDEO 58
@@ -57,7 +58,8 @@ static int camera_node;
 static enum msm_camera_type camera_type[MSM_MAX_CAMERA_SENSORS];
 static uint32_t sensor_mount_angle[MSM_MAX_CAMERA_SENSORS];
 
-struct ion_client *client_for_ion;
+/* TODO: temporary use the no-NULL check the ION client created */
+struct ion_client *client_for_ion = NULL;
 
 static const char *vfe_config_cmd[] = {
 	"CMD_GENERAL",  /* 0 */
@@ -312,7 +314,7 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	if (!region)
 		goto out;
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
-		region->handle = ion_import_fd(client_for_ion, info->fd);
+		region->handle = ion_import_dma_buf(client_for_ion, info->fd);
 		if (IS_ERR_OR_NULL(region->handle))
 			goto out1;
 		ion_phys(client_for_ion, region->handle,
@@ -3084,12 +3086,13 @@ static int __msm_release(struct msm_sync *sync)
 		msm_queue_drain(&sync->pict_q, list_pict);
 		msm_queue_drain(&sync->event_q, list_config);
 
-		wake_unlock(&sync->wake_lock);
+		pm_qos_update_request(&sync->idle_pm_qos, PM_QOS_DEFAULT_VALUE);
 		sync->apps_id = NULL;
 		sync->core_powered_on = 0;
 	}
 	mutex_unlock(&sync->lock);
-	ion_client_destroy(client_for_ion);
+/* TODO: temporary donot destroy the ION client */
+	/*ion_client_destroy(client_for_ion);*/
 
 	return 0;
 }
@@ -3744,7 +3747,8 @@ static int __msm_open(struct msm_cam_device *pmsm, const char *const apps_id,
 	sync->apps_id = apps_id;
 
 	if (!sync->core_powered_on && !is_controlnode) {
-		wake_lock(&sync->wake_lock);
+		pm_qos_update_request(&sync->idle_pm_qos,
+			msm_cpuidle_get_deep_idle_latency());
 
 		msm_camvfe_fn_init(&sync->vfefn, sync);
 		if (sync->vfefn.vfe_init) {
@@ -3793,7 +3797,9 @@ static int __msm_open(struct msm_cam_device *pmsm, const char *const apps_id,
 		sync->core_powered_on = 1;
 	}
 	sync->opencnt++;
-	client_for_ion = msm_ion_client_create(-1, "camera");
+/* TODO: temporary use the no-NULL check the ION client created */
+        if (client_for_ion == NULL)
+		client_for_ion = msm_ion_client_create(-1, "camera");
 
 msm_open_done:
 	mutex_unlock(&sync->lock);
@@ -3958,11 +3964,12 @@ static int msm_sync_init(struct msm_sync *sync,
 	msm_queue_init(&sync->pict_q, "pict");
 	msm_queue_init(&sync->vpe_q, "vpe");
 
-	wake_lock_init(&sync->wake_lock, WAKE_LOCK_IDLE, "msm_camera");
+	pm_qos_add_request(&sync->idle_pm_qos, PM_QOS_CPU_DMA_LATENCY,
+		PM_QOS_DEFAULT_VALUE);
 
 	rc = msm_camio_probe_on(pdev);
 	if (rc < 0) {
-		wake_lock_destroy(&sync->wake_lock);
+		pm_qos_remove_request(&sync->idle_pm_qos);
 		return rc;
 	}
 	rc = sensor_probe(sync->sdata, &sctrl);
@@ -3975,7 +3982,7 @@ static int msm_sync_init(struct msm_sync *sync,
 		pr_err("%s: failed to initialize %s\n",
 			__func__,
 			sync->sdata->sensor_name);
-		wake_lock_destroy(&sync->wake_lock);
+		pm_qos_remove_request(&sync->idle_pm_qos);
 		return rc;
 	}
 
@@ -3994,7 +4001,7 @@ static int msm_sync_init(struct msm_sync *sync,
 
 static int msm_sync_destroy(struct msm_sync *sync)
 {
-	wake_lock_destroy(&sync->wake_lock);
+	pm_qos_remove_request(&sync->idle_pm_qos);
 	return 0;
 }
 
