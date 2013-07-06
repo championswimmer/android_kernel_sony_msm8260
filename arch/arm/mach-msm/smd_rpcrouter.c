@@ -40,6 +40,7 @@
 #include <linux/platform_device.h>
 #include <linux/uaccess.h>
 #include <linux/debugfs.h>
+#include <linux/reboot.h>
 
 #include <asm/byteorder.h>
 
@@ -213,6 +214,26 @@ static DEFINE_MUTEX(xprt_info_list_lock);
 DECLARE_COMPLETION(rpc_remote_router_up);
 static atomic_t pending_close_count = ATOMIC_INIT(0);
 
+static int msm_rpc_reboot_call(struct notifier_block *this,
+			unsigned long code, void *_cmd)
+{
+	 switch (code) {
+	 case SYS_RESTART:
+	 case SYS_HALT:
+	 case SYS_POWER_OFF:
+		msm_rpcrouter_close();
+		break;
+	 }
+	 return NOTIFY_DONE;
+}
+
+static struct notifier_block msm_rpc_reboot_notifier = {
+	.notifier_call = msm_rpc_reboot_call,
+	.priority = 100
+};
+
+
+
 /*
  * Search for transport (xprt) that matches the provided PID.
  *
@@ -286,6 +307,10 @@ static void modem_reset_cleanup(struct rpcrouter_xprt_info *xprt_info)
 	struct msm_rpc_reply *reply, *reply_tmp;
 	unsigned long flags;
 
+	if (!xprt_info) {
+		pr_err("%s: Invalid xprt_info\n", __func__);
+		return;
+	}
 	spin_lock_irqsave(&local_endpoints_lock, flags);
 	/* remove all partial packets received */
 	list_for_each_entry(ept, &local_endpoints, list) {
@@ -2134,6 +2159,7 @@ int msm_rpcrouter_close(void)
 	while (!list_empty(&xprt_info_list)) {
 		xprt_info = list_first_entry(&xprt_info_list,
 					struct rpcrouter_xprt_info, list);
+		modem_reset_cleanup(xprt_info);
 		xprt_info->abort_data_read = 1;
 		wake_up(&xprt_info->read_wait);
 		rpcrouter_send_control_msg(xprt_info, &ctl);
@@ -2144,6 +2170,8 @@ int msm_rpcrouter_close(void)
 		flush_workqueue(xprt_info->workqueue);
 		destroy_workqueue(xprt_info->workqueue);
 		wake_lock_destroy(&xprt_info->wakelock);
+		/*free memory*/
+		xprt_info->xprt->priv = 0;
 		kfree(xprt_info);
 
 		mutex_lock(&xprt_info_list_lock);
@@ -2505,7 +2533,9 @@ static int __init rpcrouter_init(void)
 	msm_rpc_connect_timeout_ms = 0;
 	smd_rpcrouter_debug_mask |= SMEM_LOG;
 	debugfs_init();
-
+	ret = register_reboot_notifier(&msm_rpc_reboot_notifier);
+	if (ret)
+		pr_err("%s: Failed to register reboot notifier", __func__);
 
 	/* Initialize what we need to start processing */
 	rpcrouter_workqueue =

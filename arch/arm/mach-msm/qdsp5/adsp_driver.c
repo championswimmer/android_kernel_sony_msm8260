@@ -129,7 +129,7 @@ static int get_ion_region_info(int fd, struct adsp_ion_region *region)
 		pr_err("Unable to create ION client\n");
 		goto client_error;
 	}
-	region->handle = ion_import_fd(region->client, fd);
+	region->handle = ion_import_dma_buf(region->client, fd);
 	if (IS_ERR_OR_NULL(region->handle)) {
 		pr_err("%s: could not get handle of the given fd\n", __func__);
 		goto import_error;

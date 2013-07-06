@@ -15,26 +15,18 @@
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
 #include <linux/bootmem.h>
+#include <linux/gpio.h>
 #include <asm/mach-types.h>
 #include <mach/msm_bus_board.h>
 #include <mach/msm_memtypes.h>
 #include <mach/board.h>
-#include <mach/gpio.h>
 #include <mach/gpiomux.h>
 #include <mach/socinfo.h>
 #include <linux/ion.h>
 #include <mach/ion.h>
 
 #include "devices.h"
-
-/* TODO: Remove this once PM8038 physically becomes
- * available.
- */
-#ifndef MSM8930_PHASE_2
-#include "board-8960.h"
-#else
 #include "board-8930.h"
-#endif
 
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MSM_FB_PRIM_BUF_SIZE \
@@ -82,7 +74,8 @@ static int msm_fb_detect_panel(const char *name)
 				PANEL_NAME_MAX_LEN)))
 		return 0;
 
-#ifndef CONFIG_FB_MSM_MIPI_PANEL_DETECT
+#if !defined(CONFIG_FB_MSM_LVDS_MIPI_PANEL_DETECT) && \
+	!defined(CONFIG_FB_MSM_MIPI_PANEL_DETECT)
 	if (!strncmp(name, MIPI_VIDEO_NOVATEK_QHD_PANEL_NAME,
 			strnlen(MIPI_VIDEO_NOVATEK_QHD_PANEL_NAME,
 				PANEL_NAME_MAX_LEN)))
@@ -223,6 +216,11 @@ static int mipi_dsi_cdp_panel_power(int on)
 			pr_err("enable l2 failed, rc=%d\n", rc);
 			return -ENODEV;
 		}
+		usleep(10000);
+		gpio_set_value(DISP_RST_GPIO, 1);
+		usleep(10);
+		gpio_set_value(DISP_RST_GPIO, 0);
+		usleep(20);
 		gpio_set_value(DISP_RST_GPIO, 1);
 	} else {
 
@@ -409,6 +407,7 @@ static struct msm_panel_common_pdata mdp_pdata = {
 #else
 	.mem_hid = MEMTYPE_EBI1,
 #endif
+	.mdp_iommu_split_domain = 0,
 };
 
 void __init msm8930_mdp_writeback(struct memtype_reserve* reserve_table)
@@ -460,6 +459,7 @@ static struct mipi_dsi_panel_platform_data novatek_pdata = {
 	.fpga_ctrl_mode = FPGA_SPI_INTF,
 	.phy_ctrl_settings = &dsi_novatek_cmd_mode_phy_db,
 	.dlane_swap = 0x1,
+	.enable_wled_bl_ctrl = 0x1,
 };
 
 static struct platform_device mipi_dsi_novatek_panel_device = {
@@ -777,8 +777,7 @@ void __init msm8930_init_fb(void)
 	platform_device_register(&mipi_dsi_novatek_panel_device);
 
 #ifdef CONFIG_FB_MSM_HDMI_MSM_PANEL
-	if (!cpu_is_msm8930())
-		platform_device_register(&hdmi_msm_device);
+	platform_device_register(&hdmi_msm_device);
 #endif
 
 	platform_device_register(&mipi_dsi_toshiba_panel_device);

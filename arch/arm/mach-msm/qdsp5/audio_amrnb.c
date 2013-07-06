@@ -47,11 +47,11 @@
 #include <mach/msm_adsp.h>
 #include <mach/iommu.h>
 #include <mach/iommu_domains.h>
-#include <mach/msm_subsystem_map.h>
 #include <mach/qdsp5/qdsp5audppcmdi.h>
 #include <mach/qdsp5/qdsp5audppmsg.h>
 #include <mach/qdsp5/qdsp5audplaycmdi.h>
 #include <mach/qdsp5/qdsp5audplaymsg.h>
+#include <mach/qdsp5/qdsp5audpp.h>
 #include <mach/qdsp5/qdsp5rmtcmdi.h>
 #include <mach/debug_mm.h>
 #include <mach/msm_memtypes.h>
@@ -305,6 +305,7 @@ static int audamrnb_disable(struct audio *audio)
 			rc = -EFAULT;
 		else
 			rc = 0;
+		audio->stopped = 1;
 		wake_up(&audio->write_wait);
 		wake_up(&audio->read_wait);
 		msm_adsp_disable(audio->audplay);
@@ -631,24 +632,31 @@ static void audamrnb_send_data(struct audio *audio, unsigned needed)
 
 static void audamrnb_flush(struct audio *audio)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&audio->dsp_lock, flags);
 	audio->out[0].used = 0;
 	audio->out[1].used = 0;
 	audio->out_head = 0;
 	audio->out_tail = 0;
 	audio->out_needed = 0;
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
 	atomic_set(&audio->out_bytes, 0);
 }
 
 static void audamrnb_flush_pcm_buf(struct audio *audio)
 {
 	uint8_t index;
+	unsigned long flags;
 
+	spin_lock_irqsave(&audio->dsp_lock, flags);
 	for (index = 0; index < PCM_BUF_MAX_COUNT; index++)
 		audio->in[index].used = 0;
 
 	audio->buf_refresh = 0;
 	audio->read_next = 0;
 	audio->fill_next = 0;
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
 }
 
 static void audamrnb_ioport_reset(struct audio *audio)
@@ -883,7 +891,6 @@ static long audamrnb_ioctl(struct file *file, unsigned int cmd,
 	case AUDIO_STOP:
 		MM_DBG("AUDIO_STOP\n");
 		rc = audamrnb_disable(audio);
-		audio->stopped = 1;
 		audamrnb_ioport_reset(audio);
 		audio->stopped = 0;
 		break;
@@ -980,7 +987,7 @@ static long audamrnb_ioctl(struct file *file, unsigned int cmd,
 					audio->input_buff_handle = NULL;
 					rc = -ENOMEM;
 					break;
-			}
+				}
 
 				audio->input_buff_handle = handle;
 
@@ -1058,7 +1065,7 @@ static long audamrnb_ioctl(struct file *file, unsigned int cmd,
 }
 
 /* Only useful in tunnel-mode */
-static int audamrnb_fsync(struct file *file, int datasync)
+static int audamrnb_fsync(struct file *file, loff_t a, loff_t b, int datasync)
 {
 	struct audio *audio = file->private_data;
 	int rc = 0;
@@ -1558,7 +1565,7 @@ static int audamrnb_open(struct inode *inode, struct file *file)
 	audio->map_v_write = ion_map_kernel(client, handle, ionflag);
 	if (IS_ERR(audio->map_v_write)) {
 		MM_ERR("could not map write buffers\n");
-			rc = -ENOMEM;
+		rc = -ENOMEM;
 		goto output_buff_map_error;
 	}
 	audio->data = audio->map_v_write;

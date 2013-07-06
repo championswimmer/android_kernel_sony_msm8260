@@ -39,10 +39,10 @@
 #include <mach/msm_adsp.h>
 #include <mach/iommu.h>
 #include <mach/iommu_domains.h>
-#include <mach/msm_subsystem_map.h>
 #include <mach/msm_memtypes.h>
 #include <mach/qdsp5/qdsp5audppcmdi.h>
 #include <mach/qdsp5/qdsp5audppmsg.h>
+#include <mach/qdsp5/qdsp5audpp.h>
 #include <mach/qdsp5/qdsp5audplaycmdi.h>
 #include <mach/qdsp5/qdsp5audplaymsg.h>
 #include <mach/qdsp5/qdsp5rmtcmdi.h>
@@ -371,6 +371,7 @@ static int audio_disable(struct audio *audio)
 			rc = -EFAULT;
 		else
 			rc = 0;
+		audio->stopped = 1;
 		wake_up(&audio->write_wait);
 		wake_up(&audio->read_wait);
 		msm_adsp_disable(audio->audplay);
@@ -839,7 +840,9 @@ static void audmp3_async_flush(struct audio *audio)
 	struct audmp3_buffer_node *buf_node;
 	struct list_head *ptr, *next;
 	union msm_audio_event_payload payload;
+	unsigned long flags;
 
+	spin_lock_irqsave(&audio->dsp_lock, flags);
 	MM_DBG("\n"); /* Macro prints the file name and function */
 	list_for_each_safe(ptr, next, &audio->out_queue) {
 		buf_node = list_entry(ptr, struct audmp3_buffer_node, list);
@@ -852,16 +855,21 @@ static void audmp3_async_flush(struct audio *audio)
 	audio->drv_status &= ~ADRV_STATUS_OBUF_GIVEN;
 	audio->out_needed = 0;
 	atomic_set(&audio->out_bytes, 0);
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
 }
 
 static void audio_flush(struct audio *audio)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&audio->dsp_lock, flags);
 	audio->out[0].used = 0;
 	audio->out[1].used = 0;
 	audio->out_head = 0;
 	audio->out_tail = 0;
 	audio->reserved = 0;
 	audio->out_needed = 0;
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
 	atomic_set(&audio->out_bytes, 0);
 }
 
@@ -888,13 +896,15 @@ static void audmp3_async_flush_pcm_buf(struct audio *audio)
 static void audio_flush_pcm_buf(struct audio *audio)
 {
 	uint8_t index;
+	unsigned long flags;
 
+	spin_lock_irqsave(&audio->dsp_lock, flags);
 	for (index = 0; index < PCM_BUF_MAX_COUNT; index++)
 		audio->in[index].used = 0;
-
 	audio->buf_refresh = 0;
 	audio->read_next = 0;
 	audio->fill_next = 0;
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
 }
 
 static void audio_ioport_reset(struct audio *audio)
@@ -1073,7 +1083,7 @@ static int audmp3_ion_add(struct audio *audio,
 		goto end;
 	}
 
-	handle = ion_import_fd(audio->client, info->fd);
+	handle = ion_import_dma_buf(audio->client, info->fd);
 	if (IS_ERR_OR_NULL(handle)) {
 		pr_err("%s: could not get handle of the given fd\n", __func__);
 		goto import_error;
@@ -1147,7 +1157,7 @@ static int audmp3_ion_remove(struct audio *audio,
 				break;
 			}
 			MM_DBG("remove region fd %d vaddr %p\n",
-					info->fd, info->vaddr);
+				info->fd, info->vaddr);
 			list_del(&region->list);
 			ion_unmap_kernel(audio->client, region->handle);
 			ion_free(audio->client, region->handle);
@@ -1188,8 +1198,8 @@ static int audmp3_ion_lookup_vaddr(struct audio *audio, void *addr,
 		list_for_each_entry(region_elt, &audio->ion_region_queue,
 					list) {
 			if (addr >= region_elt->vaddr &&
-			    addr < region_elt->vaddr + region_elt->len &&
-			    addr + len <= region_elt->vaddr + region_elt->len)
+			addr < region_elt->vaddr + region_elt->len &&
+			addr + len <= region_elt->vaddr + region_elt->len)
 					MM_ERR("\t%s[%p]:%p, %ld --> %p\n",
 						__func__, audio,
 						region_elt->vaddr,
@@ -1405,7 +1415,6 @@ static long audio_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case AUDIO_STOP:
 		MM_DBG("AUDIO_STOP\n");
 		rc = audio_disable(audio);
-		audio->stopped = 1;
 		audio_ioport_reset(audio);
 		audio->stopped = 0;
 		break;
@@ -1729,7 +1738,7 @@ done:
 	return rc;
 }
 
-int audmp3_fsync(struct file *file, int datasync)
+int audmp3_fsync(struct file *file, loff_t a, loff_t b, int datasync)
 {
 	struct audio *audio = file->private_data;
 
@@ -2248,7 +2257,7 @@ static int audio_open(struct inode *inode, struct file *file)
 			ION_HEAP(ION_AUDIO_HEAP_ID));
 		if (IS_ERR_OR_NULL(handle)) {
 			MM_ERR("Unable to create allocate O/P buffers\n");
-					rc = -ENOMEM;
+			rc = -ENOMEM;
 			goto output_buff_alloc_error;
 		}
 		audio->output_buff_handle = handle;
@@ -2269,12 +2278,12 @@ static int audio_open(struct inode *inode, struct file *file)
 		if (rc) {
 			MM_ERR("could not get flags for the handle\n");
 			goto output_buff_get_flags_error;
-				}
+		}
 
 		audio->map_v_write = ion_map_kernel(client, handle, ionflag);
 		if (IS_ERR(audio->map_v_write)) {
 			MM_ERR("could not map write buffers\n");
-				rc = -ENOMEM;
+			rc = -ENOMEM;
 			goto output_buff_map_error;
 		}
 		audio->data = audio->map_v_write;
